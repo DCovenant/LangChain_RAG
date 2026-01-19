@@ -1,0 +1,82 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - path.repo=/usr/share/elasticsearch/backups
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+      - ../esbackups:/usr/share/elasticsearch/backups
+    mem_limit: 4g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://elasticsearch:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  backend:
+    expose:
+    - "8000"
+    build:
+      context: ..
+      dockerfile: webapp/Dockerfile.backend
+    volumes:
+      - ..:/chatbot
+      - /mnt/i:/mnt/i:ro
+      - hf_cache:/root/.cache/huggingface
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ES_URL=http://elasticsearch:9200
+      - LLM_MODEL=Qwen/Qwen2.5-3B-Instruct
+      - EMBED_MODEL=sentence-transformers/all-mpnet-base-v2
+      - PYTHONPATH=/chatbot:/chatbot/rag_chatbot
+      - GRAPH_PATH=/chatbot/dataprocessing/sse_specs_graph.pkl
+      - HF_HOME=/root/.cache/huggingface
+      - LANGCHAIN_TRACING_V2=true
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
+      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT:-rag-chatbot}
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: webapp/Dockerfile.frontend
+    expose:
+      - "5173"
+    environment:
+      - VITE_API_URL=/api
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  nginx:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    build:
+      context: ..
+      dockerfile: webapp/Dockerfile.nginx
+    ports:
+      - "0.0.0.0:80:80"
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+volumes:
+  esdata:
+  hf_cache:
