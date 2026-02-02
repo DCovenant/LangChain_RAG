@@ -16,9 +16,12 @@ RUN pip install --no-cache-dir --upgrade pip && \
     sentencepiece \
     transformers \
     accelerate \
+    langchain \
+    langchain-community \
     langchain-huggingface \
     langgraph \
-    langsmith
+    langsmith \
+    ragatouille
 
 COPY . .
 

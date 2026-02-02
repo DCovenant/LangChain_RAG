@@ -1,15 +1,8 @@
 """Minimal conversation memory."""
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List
 
-MAX_MESSAGES = 10
-
-
-@dataclass
-class Message:
-    role: str
-    content: str
-    sources: Optional[List[Dict]] = None
+from config import MAX_MESSAGES
+from rag_chatbot.utils.types import Message
 
 
 class ConversationHistory:

@@ -4,19 +4,9 @@ Includes table-title-to-content linking for better answer generation.
 
 import re
 from typing import List, Dict, Optional, Set
+from config import MAX_CONTEXT_CHARS, MIN_SCORE_RATIO
 
-MAX_CONTEXT_CHARS = 10000  # LongT5 supports 4k tokens (~12k chars)
-MIN_SCORE_RATIO = 0.1
-
-SYNONYMS = {
-    'legislation': {'regulations', 'act', 'law', 'statute'},
-    'regulations': {'legislation', 'rules', 'requirements'},
-    'documents': {'papers', 'files', 'specs', 'specifications'},
-    'standards': {'specifications', 'requirements', 'documents'},
-}
-
-
-def _filter_by_score(chunks: List[Dict], min_ratio: float = MIN_SCORE_RATIO) -> List[Dict]:
+def _filter_by_score(chunks: List[Dict]) -> List[Dict]:
     """Keep only chunks with score >= min_ratio * top_score."""
     if not chunks:
         return chunks
@@ -25,7 +15,7 @@ def _filter_by_score(chunks: List[Dict], min_ratio: float = MIN_SCORE_RATIO) -> 
     if top_score <= 0:
         return chunks
 
-    threshold = top_score * min_ratio
+    threshold = top_score * MIN_SCORE_RATIO
     return [c for c in chunks if c.get("final_score", c.get("score", 0)) >= threshold]
 
 
@@ -73,30 +63,13 @@ def _extract_keywords(text: str) -> Set[str]:
     return {w for w in words if w not in stopwords}
 
 
-def _expand_with_synonyms(keywords: Set[str]) -> Set[str]:
-    """Expand keywords with synonyms."""
-    expanded = set(keywords)
-    for kw in keywords:
-        if kw in SYNONYMS:
-            expanded.update(SYNONYMS[kw])
-    return expanded
-
-
 def _score_table_match(table_chunk: Dict, title_keywords: Set[str]) -> int:
     """Score how well a table matches title keywords."""
     if not title_keywords:
         return 0
-    
     table_text = table_chunk.get('chunk_text', '')
     table_keywords = _extract_keywords(table_text)
-    
-    expanded_title = _expand_with_synonyms(title_keywords)
-    expanded_table = _expand_with_synonyms(table_keywords)
-    
-    direct_matches = len(title_keywords & table_keywords)
-    synonym_matches = len(expanded_title & expanded_table) - direct_matches
-    
-    return direct_matches * 2 + synonym_matches
+    return len(title_keywords & table_keywords)
 
 
 def _find_best_matching_table(
@@ -161,8 +134,10 @@ def _link_table_titles_to_content(chunks: List[Dict], all_results: List[Dict]) -
 
 
 def build_context(chunks: List[Dict], all_results: Optional[List[Dict]] = None) -> str:
-    """Build context with source attribution."""
+    """Build context with source attribution and section summaries."""
     chunks = _filter_by_score(chunks)
+    if not chunks:
+        return ""
 
     if all_results:
         chunks = _get_adjacent_chunks(chunks, all_results)
@@ -171,6 +146,7 @@ def build_context(chunks: List[Dict], all_results: Optional[List[Dict]] = None) 
 
     parts = []
     chars = 0
+    seen_summaries: Set[str] = set()
 
     for c in chunks:
         content = c.get('chunk_text', '')
@@ -179,10 +155,25 @@ def build_context(chunks: List[Dict], all_results: Optional[List[Dict]] = None) 
 
         doc = c.get("file_name", "unknown")
         page = c.get("page_number", 0)
-        section = c.get("section", "")
-        section_str = f" | {section}" if section else ""
+        section_path = c.get("section_path", "") or c.get("section", "")
+        section_str = f" | {section_path}" if section_path else ""
         header = f"[{doc} | Page {page}{section_str}]"
-        entry = f"{header}\n{content}\n"
+
+        # Include section summary and context once per section
+        section_key = section_path or c.get("section", "")
+        summary_key = f"{doc}:{section_key}"
+        summary_line = ""
+        if summary_key not in seen_summaries:
+            summary = c.get("section_summary", "")
+            section_context = c.get("section_context", "")
+            if summary:
+                summary_line = f"Section summary: {summary}\n"
+            if section_context:
+                summary_line += f"Context: {section_context}\n"
+            if summary_line:
+                seen_summaries.add(summary_key)
+
+        entry = f"{header}\n{summary_line}{content}\n"
 
         remaining = MAX_CONTEXT_CHARS - chars
         if remaining <= 0:
@@ -195,81 +186,3 @@ def build_context(chunks: List[Dict], all_results: Optional[List[Dict]] = None) 
         chars += len(entry)
 
     return "\n".join(parts)
-
-
-def _table_to_text(table_data) -> str:
-    """Convert table to plain text enumeration."""
-    if not table_data:
-        return ""
-
-    if isinstance(table_data, dict) and 'headers' in table_data:
-        return _semantic_to_text(table_data)
-
-    if isinstance(table_data, dict) and 'table_data' in table_data:
-        return _coordinate_to_text(table_data)
-
-    if isinstance(table_data, list) and table_data:
-        return _list_to_text(table_data)
-
-    return str(table_data)
-
-
-def _semantic_to_text(table_data: Dict) -> str:
-    """Convert semantic table to text lines."""
-    headers = table_data.get('headers', [])
-    rows = table_data.get('rows', [])
-
-    if not rows:
-        return ""
-
-    lines = []
-    for row in rows:
-        parts = []
-        for h in headers:
-            cell = row.get(h, {})
-            val = cell.get('value', '') if isinstance(cell, dict) else str(cell)
-            val = re.sub(r'<[^>]+>', '', str(val)) if val else ''
-            if val:
-                clean_h = re.sub(r'<[^>]+>', '', str(h)) if h else ''
-                if clean_h and not clean_h.startswith('col_'):
-                    parts.append(f"{clean_h}: {val}")
-                else:
-                    parts.append(val)
-        if parts:
-            lines.append(", ".join(parts))
-
-    return "\n".join(lines)
-
-
-def _coordinate_to_text(table_info: Dict) -> str:
-    """Convert coordinate table to text."""
-    data = table_info.get("table_data", {})
-    num_rows = table_info.get("rows", 0)
-    num_cols = table_info.get("cols", 0)
-
-    if not data:
-        return ""
-
-    headers = [str(data.get(f"{c},0", "")) for c in range(num_cols)]
-    lines = []
-
-    for r in range(1, num_rows):
-        parts = []
-        for c in range(num_cols):
-            val = str(data.get(f"{c},{r}", ""))
-            if val and headers[c]:
-                parts.append(f"{headers[c]}: {val}")
-        if parts:
-            lines.append(", ".join(parts))
-
-    return "\n".join(lines)
-
-
-def _list_to_text(table_data: List[Dict]) -> str:
-    """Convert list of dicts to text."""
-    lines = []
-    for row in table_data:
-        parts = [f"{k}: {v}" for k, v in row.items() if v and k not in ('source', 'role')]
-        if parts:
-            lines.append(", ".join(parts))
-    return "\n".join(lines)

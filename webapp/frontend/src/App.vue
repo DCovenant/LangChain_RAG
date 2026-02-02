@@ -28,6 +28,15 @@
                   </ul>
                 </details>
               </div>
+              <div v-if="msg.role === 'assistant'" class="feedback-buttons">
+                <button v-if="!msg.rated" class="thumb thumb-up" @click="rateFeedback(i, 'good')" title="Good response">
+                  <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/></svg>
+                </button>
+                <button v-if="!msg.rated" class="thumb thumb-down" @click="rateFeedback(i, 'bad')" title="Bad response">
+                  <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z"/></svg>
+                </button>
+                <span v-if="msg.rated" class="rated">{{ msg.rated === 'good' ? 'Thanks!' : 'Reported' }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -59,7 +68,7 @@
 import { ref, nextTick } from 'vue'
 import VueMarkdown from 'vue-markdown-render'
 
-const API_URL = `${window.location.protocol}//${window.location.hostname}/api`
+const API_URL = `${window.location.protocol}//${window.location.host}/api`
 const question = ref('')
 const messages = ref([])
 const loading = ref(false)
@@ -80,7 +89,7 @@ async function submitQuery() {
       body: JSON.stringify({ question: userQuestion })
     })
     const data = await res.json()
-    messages.value.push({ role: 'assistant', content: data.answer, sources: data.sources })
+    messages.value.push({ role: 'assistant', content: data.answer, sources: data.sources, context: data.context, metadata: data.metadata, question: userQuestion })
   } catch (e) {
     messages.value.push({ role: 'assistant', content: 'Error: ' + e.message })
   } finally {
@@ -92,6 +101,23 @@ async function submitQuery() {
 function clearChat() { messages.value = [] }
 function scrollToBottom() {
   nextTick(() => { if (messagesContainer.value) messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight })
+}
+
+async function rateFeedback(index, rating) {
+  const msg = messages.value[index]
+  await fetch(`${API_URL}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question: msg.question,
+      answer: msg.content,
+      sources: msg.sources || [],
+      context: msg.context || '',
+      metadata: msg.metadata || {},
+      rating
+    })
+  })
+  messages.value[index].rated = rating
 }
 </script>
 
@@ -136,4 +162,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .input-wrapper button { background: transparent; border: none; color: #8e8ea0; cursor: pointer; padding: 4px; }
 .input-wrapper button:hover:not(:disabled) { color: #fff; }
 .input-wrapper button:disabled { opacity: 0.5; cursor: not-allowed; }
+.feedback-buttons { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
+.thumb { padding: 6px 10px; background: transparent; border: 1px solid #565869; border-radius: 4px; color: #8e8ea0; cursor: pointer; }
+.thumb-up:hover { background: #3a3b44; color: #22c55e; border-color: #22c55e; }
+.thumb-down:hover { background: #3a3b44; color: #ef4444; border-color: #ef4444; }
+.rated { color: #8e8ea0; font-size: 12px; }
 </style>

@@ -5,26 +5,13 @@ Hierarchical structure: Document → Section → Chunk
 Rich entity extraction: Standards, Abbreviations, Technical Terms
 """
 import re
+import sys
 import pickle
 import logging
 from typing import List, Dict, Set, Optional
 import networkx as nx
-
+from config import PATTERNS
 logger = logging.getLogger(__name__)
-
-# Entity patterns - more comprehensive
-PATTERNS = {
-    "standard": re.compile(r'\b(BS\s*EN\s*\d+[-\d]*|IEC[/\s]*\d+[-\d]*|ISO\s*\d+[-\d]*)\b', re.I),
-    "spec_ref": re.compile(r'\b([SPF][RPOA][-_]?NET[-_]?[A-Z]{3}[-_]?\d{3})\b', re.I),
-    "part_number": re.compile(r'\b([A-Z]{2,4}\d{2,}[-_]?\d*)\b'),
-    "abbreviation": re.compile(r'\b([A-Z]{2,5})\b'),  # Will filter against known list
-}
-
-# Known abbreviations from technical documents
-KNOWN_ABBREVIATIONS = {
-    "HTM", "USCD", "SCD", "SPS", "ALS", "FRP", "STL", "RIV", "HTV", "RTV", "LSR",
-    "CIGRE", "EATS", "ESI", "CDM", "EAWR", "ESQC", "HASAWA", "HSE", "PSSR"
-}
 
 
 class KnowledgeGraph:
@@ -110,11 +97,6 @@ class KnowledgeGraph:
             if len(m) >= 4:  # Filter noise
                 entities.add(m.upper())
 
-        # Known abbreviations only
-        for m in PATTERNS["abbreviation"].findall(text):
-            if m in KNOWN_ABBREVIATIONS:
-                entities.add(m)
-
         return entities
 
     def _normalize_standard(self, s: str) -> str:
@@ -145,12 +127,7 @@ class KnowledgeGraph:
     def _is_important_entity(self, entity: str) -> bool:
         """Check if entity should be a graph node (not just indexed)."""
         # Standards and spec references are important
-        if re.match(r'^(BS|IEC|ISO|[SPF][RPOA]-NET)', entity, re.I):
-            return True
-        # Known abbreviations
-        if entity in KNOWN_ABBREVIATIONS:
-            return True
-        return False
+        return bool(re.match(r'^(BS|IEC|ISO|[SPF][RPOA]-NET)', entity, re.I))
 
     def find_chunks_by_entity(self, entity: str) -> List[str]:
         """Find chunks mentioning an entity."""
@@ -240,15 +217,16 @@ class KnowledgeGraph:
 
 def build_graph_from_json(json_path: str, output_path: Optional[str] = None) -> KnowledgeGraph:
     """Build graph from extraction JSON."""
-    import ijson
+    import json
 
     kg = KnowledgeGraph()
-    chunks = []
 
     logger.info(f"Loading {json_path}")
-    with open(json_path, "rb") as f:
-        for chunk in ijson.items(f, "chunks.item"):
-            chunks.append(chunk)
+    with open(json_path, "r") as f:
+        data = json.load(f)
+
+    # Handle both formats: flat array or {"chunks": [...]}
+    chunks = data if isinstance(data, list) else data.get("chunks", [])
 
     logger.info(f"Building graph from {len(chunks)} chunks")
     kg.build_from_chunks(chunks)
